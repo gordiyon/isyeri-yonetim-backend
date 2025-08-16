@@ -6,12 +6,10 @@ from typing import Optional
 
 import asyncpg
 from fastapi import FastAPI, HTTPException
-from starlette.requests import Request
-from starlette.responses import JSONResponse
 
-# Lokal geliştirmede .env yüklemek için (deploy'da zaten env var)
+# Lokal geliştirmede .env yüklemek için
 try:
-    from dotenv import load_dotenv  # requirements.txt'te var
+    from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     pass
@@ -23,27 +21,27 @@ def ensure_sslmode(url: str) -> str:
     """DATABASE_URL içinde sslmode=require yoksa ekler."""
     if not url:
         return url
-    lower = url.lower()
-    if "sslmode=" in lower:
+    if "sslmode=" in url.lower():
         return url
-    # '?' var mı kontrol et, yoksa '?' ile ekle, varsa '&' ile ekle
     return f"{url}{'&' if '?' in url else '?'}sslmode=require"
 
-DB_URL: Optional[str] = ensure_sslmode(os.getenv("DATABASE_URL", "").strip())
+def get_db_url() -> str:
+    """Env'den DATABASE_URL'i HER SEFERİNDE oku."""
+    return ensure_sslmode(os.getenv("DATABASE_URL", "").strip())
 
 # Uygulama state: pool opsiyonel (DB down ise None kalabilir)
 app.state.pool: Optional[asyncpg.Pool] = None
 
 async def try_create_pool(retries: int = 3, delay: float = 2.0):
     """Pool'u oluşturmayı dener; başarısız olursa loglar ve tekrar dener."""
-    global DB_URL
-    if not DB_URL:
-        logger.error("DATABASE_URL boş. Lütfen ortam değişkenini ayarlayın.")
-        return None
     for i in range(1, retries + 1):
+        db_url = get_db_url()
+        if not db_url:
+            logger.error("DATABASE_URL boş. Lütfen ortam değişkenini ayarlayın.")
+            return None
         try:
             pool = await asyncpg.create_pool(
-                dsn=DB_URL,
+                dsn=db_url,
                 min_size=1,
                 max_size=5,
                 timeout=10,
@@ -58,10 +56,8 @@ async def try_create_pool(retries: int = 3, delay: float = 2.0):
 
 @app.on_event("startup")
 async def startup():
-    # Başlangıçta dene; olmazsa uygulama ÇÖKMEYECEK, sonradan tekrar deneriz.
     app.state.pool = await try_create_pool()
     if app.state.pool is None:
-        # Arka planda tekrar denemeye devam etsin (uygulama ayakta kalsın)
         async def background_retry():
             while app.state.pool is None:
                 logger.info("DB bağlantısı başarısız, 10 sn sonra tekrar denenecek…")
@@ -78,12 +74,10 @@ async def shutdown():
 
 @app.get("/health")
 async def health():
-    """Uygulama ayakta mı? (DB zorunlu değil)"""
     return {"ok": True, "db_connected": app.state.pool is not None}
 
 @app.get("/db-ping")
 async def db_ping():
-    """DB’ye ulaşabiliyor muyuz?"""
     pool = app.state.pool
     if pool is None:
         raise HTTPException(status_code=503, detail="DB bağlantısı yok")
@@ -94,7 +88,6 @@ async def db_ping():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"DB hatası: {e}")
 
-# Örnek kök endpoint
 @app.get("/")
 async def root():
     return {"status": "running"}
